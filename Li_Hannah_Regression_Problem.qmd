@@ -1,0 +1,323 @@
+---
+title: "Regression Prediction Problem"
+subtitle: "Data Science 3 with R (STAT 301-3)"
+author: "Hannah Li"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    embed-resources: true
+    code-fold: show
+    link-external-newwindow: true
+    
+execute:
+  warning: false
+  
+from: markdown+emoji
+
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon="false"}
+## Github Repo Link
+
+<https://github.com/stat301-3-2024-spring/regression-pred-prob-hannahs-li>
+:::
+
+```{r}
+#| label: load data and packages 
+#| echo: false
+
+# load packages 
+library(tidyverse)
+library(here)
+library(kableExtra)
+library(patchwork)
+
+# load data 
+load(here("data/train.rda"))
+load(here("data/train_train.rda"))
+load(here("data/train_test.rda"))
+load(here("data/test.rda"))
+
+train_regression <- read_csv(here("data/train_regression.csv"))
+test_regression <- read_csv(here("data/test_regression.csv"))
+
+```
+
+## Introduction
+For this quarter's regression prediction problem, the challenge was to predict Chicago Airbnb prices as of December 2023 based off of listing, host, and Airbnb characteristics. 
+
+This is really important and relevant to everyone, not just those involved in the Kaggle competition, because understanding factors influencing housing and rental prices showcases the dynamics of rental markets that are probably present in other major cities. Personally, I am staying in Chicago after graduation, so this prediction problem is really relevant as I make decisions about where to stay and my budget based on what housing and host/listing characteristics are important to me. On a broader level, housing crises have been dominant issues so analyzing even a small subset of housing will hopefully help policymakers, cityplanners, and civilians better understand the factors influencing the housing market to make cities a home for all regardless of socioeconomic status. 
+
+## Data Overview
+
+The data used in training these models were supplied by the Kaggle competition. 
+
+### Data Quality Check
+
+As noted in the table below, the original dataset was not conducive for predicting. Not only was there missingness in several variables which I removed, but also there was also a `bathrooms_text` variable which specified the number of bathrooms and type which produced an error message in all recipes. As a result, I converted it to a numeric value by extracting the numeric input and then dividing it by 2 if the observation had "shared" in its description. 
+
+There were also special characters such as dollar signs ($), commas, and percentages (%) `price`, `host_response_rate`, and `host_acceptance_rate`. This also limited the efficacy and ability of prediction models so I removed these special characters and made these variables numeric. 
+
+With the exception of the `id` variable, I converted all character and logical variables into factor variables because factor variables are easier to work with and R-Studio already treats logical variables as factor variables with two levels. 
+
+Furthermore, I also extracted the years, instead of specific dates, from all Date variables (`host_since`, `first_review`, `last_review`) because it minimzes noise from daily/monthly flucations, especially over a longer period of time as seen in our dataset (2008-2023). 
+
+Furthermore, there were a couple of extreme outliers—so much so they surpassed the digit limit of my computer and were all 2147483647 or 547979424—in `minimum_maximum_nights`, `maximum_maximum_nights`, `maximum_nights_avg_ntm`. As a result, I just made them the maximum values in the test dataset given the fact there were only 5 observations.
+
+All the changes to the original dataset are seen in the skim of the cleaned train dataset below. These changes were also made to the test dataset as well.  
+
+```{r}
+#| label: data quality check original data set 
+#| echo: false
+#| tbl-cap: Skimr Summary of All Variables
+skimr::skim_without_charts(train) |> 
+  knitr::kable() |> 
+  scroll_box(height = "500px", width = "700px")
+```
+
+
+### Inspecting the Target Variable (Price)
+
+```{r}
+#| label: target variable inspection
+#| echo: false 
+
+load(here("figures_tables/price_density.rda"))
+load(here("figures_tables/price10_density.rda"))
+
+price_density + price10_density
+```
+
+There was no missingness in the original target variable `price` . However, it had a hard right skew, so I decided to transform it using a log10 transformation, effectively making a new target variable of `price_log10` which follows a more normal distribution as seen in the graphs below. 
+
+## Final Models Selection 
+
+### Selection Process
+
+The final model was chosen based off the lowest MAE. Not only was this metric used in evaluating model performance in the Kaggle competition, but also because it is the average absolute difference between predicted and actual values, making it less sensitive to outliers. As a result, a lower MAE is more desirable because it indicates the model's predicted outcome is similar to the actual values. 
+
+[Best Performing Models Based on Metrics Table](#metrics-table) shows each model's MAE from worst to best. The worst model is the null model with an MAE of 171.401 while the best model is the Boosted Ensemble model since it has the lowest RMSE (0.076). 
+
+```{r}
+#| label: metrics-table 
+#| echo: false 
+
+load(here("figures_tables/table_all_metrics.rda"))
+table_all_metrics
+```
+
+On the public leader board, my best model was actually the boosted tree XGBoost (MAE of 43.82048) which is a lot better than the Boosted Ensemble Model (52.70860). This is probably because the Boosted Ensemble model was highly overfitted to the trained dataset. 
+
+However, I select my random forest model as my second model because of its lowered likelihood of being overfitted to the train and test dataset when considering generalization performance on unseen data. Unlike boosted trees, random forest models are less likely to overfit due to feature randomization and bagging. 
+
+## Methods
+
+### Overview
+I ran my own supervised machine learning simulation prior to submitting my models into a test submission, using stratified sampling to create a mock test dataset to compare my model performances to one another by obtaining model metrics. This also helped me tune my models to select the best parameters as well and recipe modifications. 
+
+### `train` Data Splitting and Folding
+I ran my own supervised machine learning simulation by stratified resampling the cleaned `train` data, using 75% for training the models (`train_train`) and the remaining 25% for testing each model/collecting metrics (`train_test`). I also folded the `train_train` data set using a v-fold cross validation with 5 folds and 3 repeats to fit/tune/train each model 15 times. 
+
+### Recipes
+#### Boosted Tree (LGBM)
+My recipe for my light GBM boosted tree model primarily handled novel levels, missingness, and created interaction terms between similar variables (some of which had joint missingness). It also removed irrelevant variables (`id`, variables with near-zero variance, and normalized numeric variables to follow a normal distribution). The annotations in the recipe below shows a general overview of each step while the section below provides a more detailed overview and reasoning of each step. 
+
+
+```{r}
+#| label: bt recipe 
+#| eval: false 
+
+recipe_fe <- recipe(price_log10 ~., data = train) |> 
+  step_rm(id) |> 
+  # adjust for novel levels found in the following variables: 
+  step_novel(neighbourhood_cleansed) |> 
+  step_novel(host_neighbourhood) |> 
+  step_novel(host_location) |> 
+  # created interaction terms between the first and last review 
+  step_interact(~first_review:last_review) |> 
+  # created interaction terms between the all the review scores   
+  step_interact(~review_scores_rating:
+                  reviews_per_month:
+                  review_scores_accuracy: 
+                  review_scores_cleanliness: 
+                  review_scores_checkin: 
+                  review_scores_communication: 
+                  review_scores_location: 
+                  review_scores_value
+                ) |> 
+  # deal with missingnessness 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>
+  # prevent overfitting of the training data 
+  step_other(threshold = 0.05) |>
+  # dummied categorical variables  
+  step_dummy(all_nominal_predictors()) |>
+  # removed predictors with near-zero variance/little to none variation 
+  step_nzv(all_numeric_predictors()) |>
+  # standarize and ensure all numeric predictors follow a normal distribution 
+  step_normalize(all_numeric_predictors())
+
+```
+
+`step_rm`: removed `id` variable because it was irrelevent towards actually predicting the target variable.  
+
+`step_novel`: adjusted for the novel levels found in `neighbourhood_cleansed`, `host_neighbourhood`, and `host_location`. 
+
+`step_interact` of `first_review` and `last_review` variables: I also created interaction terms between `first_review` and `last_review` because the timing of the first and last review could indicate how the perceived and actual property value shifted over time, which is crucial to both understanding and predicting our target variable.  
+
+`step_interact` of review scores variables: I created interaction terms between the all the review scores because they all had joint missingness. Also, guests might rate different aspects of their experience—accuracy, cleanliness, communication, check-in, location, value, location—alongside other factors like timing (`review_scores_month`) that influences their overall perception of their Airbnb experience. As a result, we need to examine how these variables individually and collectively influence perception of an Airbnb's value and their subsequent prices. 
+
+`step_impute_mode` & `step_impute_mean`: There was missingness in the data, so I dealt with it by imputing the median of all numeric predictors and the mode of all nominal predictors. I chose this way over just removing all the NA values to avoid losing potentially valuable insights, especially if the missingness is not completely random, and to maximize the utility of the dataset. 
+
+`step_other`: To prevent overfitting of the data, I put the nominal predictors that occured less than 5% of the time into a new level ("Other").  
+
+`step_dummy`, `step_nzv`, & `step_normalize`: Finally, I prepped the data for my model: dummying my categorical variables, removing predictors  with near-zero variance/little to none variation because they would be unhelpful for modeling, and normalizing my numeric variables to follow a normal distribution. 
+
+#### Random Forest 
+
+My random forest recipe was very similar to my boosted tree feature engineering recipe, using the same imputation methods to real with missingness and interaction variables. However, the primary different is one-hotting my dummy variables, which I did not do in my boosted tree model because it can create redundant variables. 
+
+```{r}
+#| label: rf recipe 
+#| eval: false 
+
+recipe_rf <- recipe(price_log10 ~., data = train) |> 
+  step_rm(id) |> 
+  # created interaction terms between the first and last review
+  step_interact(~first_review:last_review) |> 
+  # created interaction terms between the all the review scores 
+  step_interact(~review_scores_rating:
+                  reviews_per_month:
+                  review_scores_accuracy: 
+                  review_scores_cleanliness: 
+                  review_scores_checkin: 
+                  review_scores_communication: 
+                  review_scores_location: 
+                  review_scores_value
+  ) |> 
+  # deal with missingnessness 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |>
+  # prevent overfitting 
+  step_other(all_nominal_predictors(), threshold = 0.05) |>
+  # dummied and one-hotted categorical variables 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  # removed predictors with near-zero variance/little to none variation 
+  step_nzv(all_numeric_predictors()) |>
+  # standarize and ensure all numeric predictors follow a normal distribution 
+  step_normalize(all_numeric_predictors())
+```
+
+`step_rm`: removed `id` variable because it was irrelevent towards actually predicting the target variable.  
+
+`step_interact` of `first_review` and `last_review` variables: I also created interaction terms between `first_review` and `last_review` because the timing of the first and last review could indicate how the perceived and actual property value shifted over time, which is crucial to both understanding and predicting our target variable.  
+
+`step_interact` of review scores variables: I created interaction terms between the all the review scores because they all had joint missingness. Also, guests might rate different aspects of their experience—accuracy, cleanliness, communication, check-in, location, value, location—alongside other factors like timing (`review_scores_month`) that influences their overall perception of their Airbnb experience. As a result, we need to examine how these variables individually and collectively influence perception of an Airbnb's value and their subsequent prices. 
+
+`step_impute_mode` & `step_impute_mean`: There was missingness in the data, so I dealt with it by imputing the median of all numeric predictors and the mode of all nominal predictors. I chose this way over just removing all the NA values to avoid losing potentially valuable insights, especially if the missingness is not completely random, and to maximize the utility of the dataset. 
+
+`step_other`: To prevent overfitting of the data, I put the nominal predictors that occured less than 5% of the time into a new level ("Other").  
+
+`step_dummy`, `step_nzv`, & `step_normalize`: Finally, I prepped the data for my model: dummying and one-hotting my categorical variables to prep them for my models and to minimize bias, removing predictors  with near-zero variance/little to none variation because they would be unhelpful for modeling, and normalizing my numeric variables to follow a normal distribution. 
+
+
+### Model Details & Their Optimal Parameters 
+
+#### Boosted Tree (LGBM)
+Light GBM boosted trees create an prediction ensemble using decision trees, where each tree is influenced by the results of previous trees.  
+
+In the figure below, the effect of changing the mtry, min_n, tree_depth, and lean_rate hyperparameters on MAE are shown below. Lower amounts of randomly selected predictors (mtry) seems to be generally favorable across all min_n, learning rates, and tree depth. Smaller min_n (minimal node sizes) also seem to be preferable; however, the opposite is true for tree_depth as reflected in the lowered MAE values. 
+
+```{r}
+#| label: bt params figure 
+#| echo: false 
+
+load(here("figures_tables/parameters_lbt.rda"))
+parameters_lbt
+
+```
+
+The table below shows the parameters of my best performing Light GBM model, in which mtry is 18, min_n is 2, tree_depth is 7, and the learning rate is 0.0251189.
+
+
+```{r}
+#| label: bt params table 
+#| echo: false 
+
+load(here("figures_tables/table_lbt_parameters.rda"))
+table_lbt_parameters
+```
+
+#### Random Forest 
+
+Random forests creates and combines independent decision trees to predict data. 
+
+In the figure below, the effect of changing the mtry, min_n, and trees hyperparameters on MAE are shown below. Smaller min_n (minimal node sizes) also seem to be preferable; however, the opposite is true to a certain extent for the number of trees as reflected in the lowered MAE values. Mtry, or the number of randomly selected predictors, generally flucates depending on the other hyperparameters.  
+
+```{r}
+#| label: rf params figure 
+#| echo: false 
+
+load(here("figures_tables/parameters_rf.rda"))
+parameters_rf
+
+```
+
+The table below shows the parameters of my best performing Random Forest model, in which mtry is 19, min_n is 1, and tree is 1500. 
+
+```{r}
+#| label: rf params table
+#| echo: false 
+
+load(here("figures_tables/table_rf_parameters.rda"))
+table_rf_parameters
+```
+
+## Final Analysis of Models 
+
+After selecting the optimal tuning parameters, I fitted both models on the entire Airbnb testing test. However, since I did not have access to the ctual values of the testing set, my residual graphs show each models respective performance on my `test_train` dataset.
+
+Per the figures below, both models did pretty well with predicting price points compared to the actual Airbnb prices. 
+
+However, we must take these graphs and metrics with a grain of salt because the training dataset is not the same as a the testing, as seen in the difference in MAE values/model metrics on the two datasets. 
+
+### Predicted Price vs. Actual Prices
+
+#### Light GBM Boosted Tree
+
+[Light GBM Boosted Tree Residuals](#bt-residuals) shows that the predicted and actual popularity are relatively similar for this model. However, the random forest definitely overlooks a lot of the outliers, especially for more extreme values which were omitted for visualization purposes. Overall, the average residual is 9.08. 
+
+```{r}
+#| label: bt-residuals 
+#| echo: false 
+
+load(here("figures_tables/lgbm_bt_residuals_plot.rda"))
+lgbm_bt_residuals_plot
+
+```
+
+#### Random Forest 
+
+[Random Forest Residuals](#rf-residuals) shows that the predicted and actual popularity are relatively similar for this model, but less accurate than the Light GBM model because of the random forest is less fitted to the training dataset as the average residual is 83.90.
+
+
+```{r}
+#| label: rf-residuals 
+#| echo: false 
+
+load(here("figures_tables/rf_residuals_plot.rda"))
+rf_residuals_plot
+
+```
+
+However, the average predicted price on the original scale of the random forest predictions (158.1379) is far more similar to the actual mean of the entire training data set price (116.3794) than the Light GBM boosted tree's predictions (232.9576), indicating that the random forest model may have better captured the overall trend and variability of the target variable. This suggests that the random forest has better generalization and perhaps is more suitable to analyzing more macro-level trends compared to the Light GBM boosted tree model. 
+
+## Conclusion
+In conclusion, tree-based models were the best in predicting outcomes in this prediction regression problem. While the Light GBM model was more fitted to the `Airbnb` dataset and thus was able to better predict Airbnb prices in Chicago as proven by its lower MAE values on both training and testing data, I would choose the Random Forest when potentially analyzing Airbnb prices on a macro-level because of its scalability advantages, reduced likelihood of overfitting, and better generalization to new data. As a result, while Light GBM excelled in this specific context, the Random Forest model remains a reliable and versatile option for similar prediction tasks with broader applications.
+
+
