@@ -1,5 +1,5 @@
 ## Regression Prediction Problem
-Competition between spring 2024 data science cohort. Ranking: 25/2774 models
+Competition between spring 2024 data science cohort. Ranking: 25th/2,774 models
 
 ## Overview 
 Predict Chicago Airbnb prices as of December 2023 based off of listing, host, and Airbnb characteristics in a Kaggle Competition for STAT 301-3.  
